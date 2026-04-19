@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- ENUMS ---
+
+enum Role {
+  ADMIN
+  PM
+  FOREMAN
+  WORKER
+  SUBCONTRACTOR
+  GUEST
+}
+
+enum Trade {
+  GENERAL
+  ELECTRICAL
+  PLUMBING
+  CONCRETE
+  STEEL
+  CARPENTRY
+  HVAC
+  SCAFFOLDING
+  ROOFING
+  OTHER
+}
+
+enum MessageType {
+  TEXT
+  PHOTO
+  VIDEO
+  VOICE
+  DOCUMENT
+  SYSTEM
+}
+
+enum IssueStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum IssueSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// --- CORE MODELS ---
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  projects    Project[]
+  members     OrganizationMember[]
+}
+
+model OrganizationMember {
+  id             String       @id @default(cuid())
+  organizationId String
+  userId         String
+  role           Role         @default(WORKER)
+  trade          Trade?
+  
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([organizationId, userId])
+}
+
+model User {
+  id               String    @id @default(cuid())
+  phone            String    @unique
+  name             String?
+  languagePreference String   @default("pl")
+  deviceToken      String?   // Dla powiadomień push
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  orgMemberships   OrganizationMember[]
+  projectMemberships ProjectMember[]
+  messages         Message[]
+  assignedIssues   Issue[]   @relation("AssignedTo")
+  reportedIssues   Issue[]   @relation("ReportedBy")
+  reactions        Reaction[]
+  readReceipts     ReadReceipt[]
+}
+
+model Project {
+  id             String   @id @default(cuid())
+  name           String
+  description    String?
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  members        ProjectMember[]
+  channels       Channel[]
+  bimModels      BimModel[]
+  issues         Issue[]
+  dailyLogs      DailyLog[]
+  checklists     Checklist[]
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  
+  project   Project  @relation(fields: [projectId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([projectId, userId])
+}
+
+// --- COMMUNICATION ---
+
+model Channel {
+  id          String   @id @default(cuid())
+  name        String
+  type        String?  // e.g., "GENERAL", "SAFETY", "TRADE", "ISSUE"
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id])
+  
+  messages    Message[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+model Message {
+  id          String      @id @default(cuid())
+  content     String?
+  type        MessageType @default(TEXT)
+  channelId   String
+  userId      String
+  elementId   String?     // Powiązanie z elementem BIM (opcjonalne)
+  
+  channel     Channel     @relation(fields: [channelId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+  element     BimElement? @relation(fields: [elementId], references: [id])
+
+  translations Translation[]
+  attachments  Attachment[]
+  reactions    Reaction[]
+  readReceipts ReadReceipt[]
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([channelId])
+  @@index([userId])
+}
+
+model Translation {
+  id        String   @id @default(cuid())
+  messageId String
+  language  String
+  content   String
+  
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, language])
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String
+  url       String   // S3/Minio URL
+  type      String   // photo, video, document, voice
+  size      Int?     // bytes
+  
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId, emoji])
+}
+
+model ReadReceipt {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+  
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId])
+}
+
+// --- BIM & MODELS ---
+
+model BimModel {
+  id        String   @id @default(cuid())
+  projectId String
+  name      String
+  url       String   // Link do pliku IFC
+  version   Int      @default(1)
+  
+  project   Project  @relation(fields: [projectId], references: [id])
+  elements  BimElement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BimElement {
+  id         String   @id @default(cuid())
+  externalId String   // IFC GlobalId
+  bimModelId String
+  type       String?  // Wall, Slab, Column, etc.
+  name       String?
+  
+  bimModel   BimModel @relation(fields: [bimModelId], references: [id])
+  messages   Message[]
+  issues     Issue[]
+
+  @@index([externalId])
+}
+
+// --- WORKFLOWS: ISSUES, LOGS, CHECKLISTS ---
+
+model Issue {
+  id          String        @id @default(cuid())
+  title       String
+  description String?
+  status      IssueStatus   @default(OPEN)
+  severity    IssueSeverity @default(MEDIUM)
+  projectId   String
+  reportedById String
+  assignedToId String?
+  elementId   String?
+  
+  locationLat Float?
+  locationLng Float?
+
+  project     Project       @relation(fields: [projectId], references: [id])
+  reportedBy  User          @relation("ReportedBy", fields: [reportedById], references: [id])
+  assignedTo  User?         @relation("AssignedTo", fields: [assignedToId], references: [id])
+  element     BimElement?   @relation(fields: [elementId], references: [id])
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+}
+
+model DailyLog {
+  id          String   @id @default(cuid())
+  projectId   String
+  date        DateTime @default(now())
+  weather     String?
+  crewCount   Int?
+  activities  String?
+  
+  project     Project  @relation(fields: [projectId], references: [id])
+  
+  @@index([projectId, date])
+}
+
+model Checklist {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String
+  
+  project     Project  @relation(fields: [projectId], references: [id])
+  items       ChecklistItem[]
+}
+
+model ChecklistItem {
+  id          String    @id @default(cuid())
+  checklistId String
+  content     String
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+  
+  checklist   Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+}

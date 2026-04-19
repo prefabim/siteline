@@ -1,0 +1,19 @@
+{
+  "name": "@siteline/db",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@prisma/client": "^5.11.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.11.0"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "push": "prisma db push",
+    "seed": "prisma db seed"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  }
+}
